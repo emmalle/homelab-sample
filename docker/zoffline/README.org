@@ -1,0 +1,69 @@
+#+title: Zwift Offline
+#+property: header-args :tangle docker-compose.yml
+
+Zoffline enables the use of Zwift offline by acting as a partial implementation of a Zwift server. -<https://github.com/zoffline/zwift-offline>
+
+** Prerequisites
+
+- Zwift installed (not logged in)
+- Indoor Trainer
+- Depending on how you want to use Zoffline, have a look at the [[https://github.com/zoffline/zwift-offline][github]].
+- Set up a location for storage.
+  - Create a ~server-ip.txt~ with the ip of the host inside ~storage~.
+  - If you already have an existing ~profile.bin~ and ~strava_token.txt~, also move it in ~storage~.
+    - Otherwise use the zoffline_helper to acquire these. ~profile.bin~ if your existing strava account. ~strava_token.txt~ is used for auto-upload.
+
+** Docker-compose.yml
+*** Docker Image
+
+- Docker Service Name = zoffline
+- Image: Specify the docker image. No version behind colon so always latest version.
+- Container_name: Name that will be given to the container. If not stated, this will be randomized.
+
+#+begin_src yaml
+version: '3'
+
+services:
+  zoffline:
+    image: zoffline/zoffline
+    container_name: zoffline
+#+end_src
+
+*** General
+
+- Restart: The container will always try to restart unless it is manually stopped by the user.
+
+#+begin_src yaml
+    restart: unless-stopped
+#+end_src
+
+*** Network
+
+- Ports: This is the port used for Zoffline. Left is the host port, right is the container port.
+
+#+begin_src yaml
+    ports:
+      - 80:80
+      - 443:443
+      - 3022:3022/udp
+      - 3023:3023
+#+end_src
+
+*** Variables
+
+- Volumes: Storage volumes need to be passed trough or keep locally. Left volume is a local directory or file. Right volume is a direcotry or file inside the container.
+- Environment: Add timezone
+
+#+begin_src yaml
+    volumes:
+      - <path/to/host/storage>:/usr/src/app/zwift-offline/storage
+    environment:
+      - TZ=Europe/Brussels
+#+end_src
+
+** Notes
+- When container is online
+  - Run the ~configure_client~ script provided in zoffline_helper (inf on Windows)
+  - Change the host from 127.0.0.1 to the ip of the host that runs the zoffline container
+  - Run the scripts to aquire for example your zwift profile and strava authentication.
+    - Move files to storage using scp: ~scp <file> <user>@<host ip>:<location of storage>~

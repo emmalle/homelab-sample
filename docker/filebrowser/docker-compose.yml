@@ -1,0 +1,21 @@
+version: '3'
+
+services:
+  filebrowser:
+    image: filebrowser/filebrowser:latest
+    container_name: filebrowser
+
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+    ports:
+      - 80:80
+
+    volumes:
+      - </path/to/chosen/host/root>:/srv
+      - </path/to/filebrowser.db/on/host>:/database.db
+      - </path/to/settings.json/on/host>:/config/settings.json
+    environment:
+      - PUID=<$ id -u>
+      - PGID=<$ id -g>

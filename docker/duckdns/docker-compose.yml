@@ -1,0 +1,18 @@
+version: '3 '
+
+services:
+  duckdns:
+    image: linuxserver/duckdns:latest
+    container_name: duckdns
+
+    restart: unless-stopped
+
+    volumes:
+      - </path/to/host/config>:/config
+    environment:
+      - PUID=<$ id -u>
+      - PGID=<$ id -g>
+      - TZ=Europe/Brussels
+      - SUBDOMAINS=<duckdns subdomain1>,<subdomain2>
+      - TOKEN=<duckdns token>
+      - LOG_FILE=false

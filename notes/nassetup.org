@@ -1,0 +1,704 @@
+#+title: Homelab
+
+** Intro
+This org-file is primarly made for my personal use but can can be interpreted by anyone.
+In my opinion this is a solid setup to start your own homelab.
+
+** Hardware
+- ECC Memory
+- Processor and board that supports it: AMD/Xeon
+- Motherboard that allows passthrough of iommu groups
+- Enough core
+
+** Bios
+- Enable SVM (amd) or VT-d (intel)
+- Sata mode to AHCI not RAID
+- Enable XMP if supported
+
+** Proxmox
+*** Installation process
+- Select installation drive
+- Choose locale
+- Set password and email
+  - Default user is 'root'
+- Set up networking
+  - Pick a hostname: 'pve.<domain.com>'
+  - My preference:
+    - x.x.x.1 = default gateway
+    - x.x.x.2 = proxmox
+    - x.x.x.3 = truenas
+- Finish installation
+
+*** Troubleshoot notes
+Most often issue occurre with Proxmox when new hardware is added to the system.
+- If the CPU has no integrated graphics, and your main graphics card is passed through, do not forget to remove it form the vm.
+- On boot, edit the grub boot options and change it to ~GRUB_CMDLINE_LINUX_DEFAULT=''~.
+- If the proxmox install does not have access to the internet, there is a change the pci address have changed.
+  - Via ~ip a~ find the new name of the network peripheral. Check if the is the same in ~/etc/network/interfaces~, most likely you need to change it. Don't forget to change it aswell on the virtual bridge.
+- If disks have been moved, and Proxmox complains about a degraded zfs pool, a simple ~zpool export~ can fix this issue. (proxmox should now use the disk by id instead of label)
+- Check all the passed trough modules for the vm's. The iommu group might have changed when installing new hardware in the system.
+- Afterwards you can reboot into with the normal grub config.
+
+*** Web Interface
+- Open the interface on https://x.x.x.2:8006
+**** Repositories
+Before doing anything, it's best to get update/upgrade the package repositories.
+- Select the node (pve)
+- Open menu Updates - Repositories
+  - Disable enterprise repository
+  - Add no-subscription repository
+- Under the Updates menu
+  - Refresh the repositories (equivalent of an update)
+  - And upgrade to get the latest package versions
+
+**** IOMMU and GPU passthrough
+If the CPU allows it, it's highly recommended to enable IOMMU grouping. This will make it a lot easier to pass through hardware to virtual machines.
+- Select the node and open the shell.
+- Edit ~/etc/default/grub~
+  - Depending on the CPU, it needed to add ~amd/intel_iommu=on~ like: ~GRUB_CMDLINE_LINUX_DEFAULT='quiet amd_iommu=on'~.
+  - Due to a bug, it might be needed to also add ~initcall_blacklist=sysfb_init~. (needed for my RX580)
+  - To make these changes available on next boot run ~update-grub~.
+- Edit ~/etc/modules~.
+  - Add on seperate lines: ~vfio vfio_iommu_type1 vfio_pci vfio_virqfd~.
+- Edit ~/etc/modprobe.d/blacklist.conf~ if you want to passthrough a graphics card.
+  - Add on seperate lines: ~blacklist nvidiafb blacklist nvidia blacklist radeon blacklist nouveau~.
+  - OR add it in the grub command like ~GRUB_CMDLINE_LINUX_DEFAULT='quiet amd_iommu=on init_blacklist=sysfb_init modprobe.blacklist=radeon,nouveau,nvidia,nvidiafb,nvidia-gpu'~, this makes it easier to troubleshoot when having boot issue when you only have one video card that automatically get's passed through.
+- To make these changes take effect, reboot.
+
+**** LXC Templates
+Proxmox has many LXC templates available of the major distros. But there are also some great containers available provided by Turkey. If these are not available by default open the node shell and run ~pveam update~.
+
+**** TLS and ACME
+These certificates are mainly useful when planning on using the mobile application and the web UI exclusively locally. If not, it might be better to just use a general certificate that gets handed out with something like a reverse proxy.
+- Select the Datacenter and open the menu ACME.
+  - Accounts: Create an account with Let's Encrypt V2
+  - Challenge Plugins: Select the correct DNS API
+    - For me it's 'Cloudflare Managed DNS'
+    - Enter the Cloudflare ID and generate a Token
+      - Account ID can be found on the overview page of the domain
+      - API token can be found under ID
+        - Create token: Edit zone DNS - Permissions: Zone dns edit - Zone zone read - Zone Resources: Include specific done <domain.com>
+- Select the node and open the menu System - Cerficates
+  - ACME: Create a DNS challenge for the domain.
+  - Order the certificates.
+- Add the domain url to your local dns.
+
+**** Storage
+Under datacenter select the menu 'Storage'. Here you can find all the storage options available. By double clicking, you can change the content for which the dataset will be used for.
+In the left menu, at the bottom, all these dataset are also visible. By clicking on them it's possible to upload/downloads ISOs, LXC templates, view and restore backups and more.
+
+***** GPT
+Creating
+- Select node.
+- Under menu 'Disks' select the unused disk.
+- Initialize Disk with GPT.
+
+***** ZFS
+Creating
+- Select the node.
+- Under menu 'Disks' open 'ZFS'.
+- Create: ZFS.
+  - Select 'Disks'.
+  - Give it a name and select a RAID level.
+Importing
+- Select the datacenter
+- Under menu 'Storage' add 'ZFS'
+- Here you can also enable thin-provisioning. This will be for efficient because only the used data will be provisioned.
+
+**** Backups
+When multiple Virtual Machines are set up on a node, it might be a hassle to back them all up. Luckily this can all be automated. Select the datacenter and then 'Backup'.
+- Add a new backup job.
+- Select the node, storage location, schedule and which vms need to be backed up.
+- If planning on setting up email notifications, also enter a email address.
+- Under the option Retention you can also specify the when backups get deleted.
+  - By navigating to the existing backups, you can mark the as 'protected'. This way they won't get deleted automatically.
+
+**** Alerts
+Alerts are great to know when backups take place, if there are SMART test warnings on disks and when a ZFS pool is degraded. It's recommended that this is set up.
+If using GMail, make sure to generate a password. Manage your account, and under security open 'app passwords'.
+- Open the shell in the node.
+  - Install a couple dependencies ~apt install -y libsasl2-modules mailutils postfix-pcre~.
+  - Save credentials: ~echo "smtp.gmail.com <email>@gmail.com:<generated password>" > /etc/postfix/sasl_passwd~.
+  - Change permissions: ~chmod 600 /etc/postfix/sasl_passwd~.
+  - Hash file: ~postmap hash:/etc/postfix/sasl_passwd~.
+  - Edit posfix config: ~vim /etc/postfix/main.cf~.
+  - Append:
+#+begin_src
+relayhost = smtp.gmail.com:587
+smtp_use_tls = yes
+smtp_sasl_auth_enable = yes
+smtp_sasl_security_options =
+smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd
+smtp_tls_CAfile = /etc/ssl/certs/Entrust_Root_Certification_Authority.pem
+smtp_tls_session_cache_database = btree:/var/lib/postfix/smtp_tls_session_cache
+smtp_tls_session_cache_timeout = 3600s
+smtp_header_checks = pcre:/etc/postfix/smtp_header_checks
+#+end_src
+  - Create: ~vim /etc/postfix/smtp_header_checks~.
+    - Add: ~/^From:.*/ REPLACE From: <user mail name> <email address>~.
+  - Hash file: ~postmap hash:/etc/postfix/smtp_header_checks~.
+  - Reload: ~postfix reload~.
+You should now be able to send out email. Just to be sure, check the permissions - users menu and look if an email adress is entered for the root user.
+You can now run the command ~echo "Test message" | mail -s "Test Subject" <personal email>~.
+
+If you have entered your email with in the backup menu mentioned in the previous header, this should all be set up already. Also for SMART tests, email should go out automatically. To just make sure run ~smartctl -a /dev/sdx~ and look if 'SMART support is: Enabled'. SMART is used to check if there are any errors with a disk that might hint that is is failing.
+
+Also for ZFS pools it should be enabled by default. To make sure run ~vim /etc/zfs/zed.d/zed.rc~. If 'ZED=EMAIL=ADDR="root"' is uncommented is should be active. Since we assigned the personal email address to the root user, it should route without issues. ZFS alerts are useful for when a pool is degraded. This means that one or more driver have failed. It is then quite importent to replace them as soon as possible.
+
+**** Extras
+Just for sanity it best to already set a few network variables so it won't cause any issues in the future.
+- SSH:
+  - Edit ~/etc/ssh/sshd_config~ and add/edit "PertmitRootLogin yes". Just so it's possible to ssh into the server when something goes wrong (since I don't set up other users). To have this take effect, restart the service using ~systemctl restart sshd.service~.
+- VPN:
+  - I guess if you want to run a server, it might be useful to connect to it from anywhere in the world. A VPN is a safe and easy way to do so. This VPN will probably run inside a container or VM. Thus it is recommended that ip_forwaring is enabled. You can do this for the boot cycle running the command ~sysctl net.ipv4.ip_forward=1~ but if you want to make this permantent it recommended to edit the file ~/etc/sysctl.conf~ and uncomment ~net.ipv4.ip_foward=1~ and afterward reload the config using the command ~sysctl --system~.
+
+** TrueNAS
+*** Configuration
+TrueNAS will be used as for the major storage solution. It's a bit easier to manage permissions, network shares and datasets.
+
+- Create VM
+  - Check advanced options
+  - General: Start at boot, order 1 and set the startup delay to about 60 second
+      - This means startup order will start after 60 second. Plenty to have network shares available.
+  - System: Enable Qemu Agent
+  - Disks: Enable SSD emulation if storage is an SSD
+  - CPU: Atleast 2 core
+  - Memory: 8GB RAM & Disable Ballooning Device
+
+When created, selected the VM and open the hardware menu.
+Don't add the disk using this menu. Either pass through a PCI device such as a sata controller or a SAS HBA card. This will pass through the card and all the disk to the VM.
+To manually pass through the disk:
+- Open the shell of the node.
+  - Run ~ls -l /dev/disk/by-id/~. This will list the serial and model number of the disks.
+  - To add them to a VM run ~qm set <vm id> -scsi<1,2,3,...> /dev/disk/by-id/<full serial-model-number>~
+    - Not scsi0. This is the disk the VM is installed on.
+- NOTE: This means all SMART Tests need to be done via Proxmox since TrueNAS does not have complete access to the drive (unlike with an HBA).
+When passing throug a SATA controller some actions need to be take aswell.
+- If the mobo has a seperate group for the sata controller, you can pass it through without additional steps.
+- If a raid controller (IT mode) is installed:
+  - Open the hardware menu and change the machine to a q35 system.
+  - Add a new PCI Device and select the HBA card.
+    - Enable "All functions" and "PCI-Express"
+    - If the system does not boot or boots into the card, disable "ROM-Bar"
+
+*** Installation
+- Start VM with the console.
+- Install/Upgrade.
+- Select the virtual disk to install TrueNAS on.
+- Choose how to setup your login. In the past this was using root to log in. Set a password.
+- Finish installation.
+- On proxmox under hardware you can now remove the CD/DVD ISO.
+
+*** Setup
+**** Initial
+A few things need to be checked, changed or created before we can set everything up.
+- Check and/or correct localization.
+  - System Settings - General.
+- Setting up a user.
+  - Credentials - Local User
+    - User doesn't really need a home directory since TrueNAS will mainly be used for storage management.
+    - Enable Permit Sudo.
+**** Storage
+Now we're ready to create the pool. We will be using the menu items 'Storage' and 'Datasets' for this.
+- Storage
+  - Either import or create a tool.
+  - Select the disks, pick the vdev setup and create.
+- Options
+  - RaidZx: x = amount of disk redundency. Read and write will depends on amount of disks and amount of redundent disks.
+  - Mirror: All disks have same data. Read = amount of disk in mirror, Write = 1x.
+  - Stripe: No backup or fallback, 1 disk dies = pretty much everything gone. Read and write depends on amount of disks.
+- After creation
+  - If the pool is using SSD's, enable 'Auto Trim' under 'ZFS Health' in the storage menu.
+  - Under menu 'Datasets' create one.
+    - Give it a name and save.
+    - Under Permissions, change this to your prefered user and group.
+      - Apply these changes recursively. (pretty much insures correct functionality when there is already data).
+
+**** Network
+As mentioned at the start, I prefer hosting the TrueNAS web interface on ip x.x.x.3. This can be changed in the menu 'Network'.
+- Double click the active network interface.
+  - Disable DHCP.
+  - Under aliases, pick the preferred ip address.
+- In the past, above actions resulted in a reset of the global configuration. If this happens:
+  - pick a couple nameservers.
+  - set the ipv4 default gateway to x.x.x.1
+- Surf to the new ip and confirm the changes.
+
+**** Share
+Since storage and networking is now set up. Let's create a network share. This can be done under the menu 'Shares'. Since SMB is supported by pretty much all platforms, this is my prefered protocol.
+- Add a share.
+  - Select the path to the correct dataset.
+  - Give the share a name. This is the name use to connect to.
+  - By default ACL is enabled so after creating the share, TrueNAS will prompt you to configure this.
+    - Pick the same owner and group as the dataset.
+    - Pick the prefered Access Control List (user or group is pretty much fine.)
+    - Apply permissions recursively
+  - Accept the prompt to enable the service.
+Connecting:
+- In a file browser with ~\\x.x.x.3\<share-name>~ on unix or ~smb://x.x.x.3/<share-name>~ for windows.
+- Via the command line ~$ sudo mount -t cifs -o username=<user>,password=<pass>,uid=<user>,gid=<group> //x.x.x.3/<share-name> </mount/location>~
+- In ~/etc/fstab~ with ~//x.x.x.3/<share-name> </mount/location> cifs username=<user>,password=<password>,uid=<user>,gid=<group>,_netdev,nofail 0 0~
+- In Proxmox under Datacenter - Storage - add SMB/CIFS and fill in the credentials.
+  - Proxmox will list all the available shares. Pick one and choose the usage.
+
+**** Apps
+TrueNAS in itself can also host services. These can be set up under the menu 'Apps'.
+If you want more applications follow the steps below.
+- Select the pool to create app dataset.
+  - Manage catalogs.
+    - Add catalogs - continue.
+    - "truecharts" - https://github.com/truecharts/catalog - stable - main.
+    - This can take a while to verify and set up.
+
+**** Data Protection
+Even if you have set up a pool with redundency, it might still be useful to test the disks so that nothing is wrong. For this open the menu 'Data Protection'.
+I recommend running a short SMART test on all disks weekly and a long test monthly.
+A scrub task should already be added that runs weekly. This is fine.
+
+**** Alerts
+It might be useful to get notified when a disk is failing. For this notification need to be set up.
+Press the bell icon at the top right - settings cog - Email and for ease of use, pick Gmail OAuth.
+
+**** Services
+By default TrueNAS does not have common services enabled. Navigate to 'System Settings' - 'Services' and enable SSH, start automatically and since we use the root user, open the pencil menu and allow root login.
+
+** Virtualization
+*** VM
+- Upload ISO to correct storage location.
+- Creating a VM
+  - General:
+    - Give the VM a name.
+    - Select if the VM needs to start on boot, give it a boot order and possible set a timeout for after how many second the next order start up.
+  - OS: Upload ISO.
+- System: In case of linux machine, enable Qemu Agent.
+- Disks: Enable SSD emulation if available (depending on disk type) if the VM is store on an SSD.
+- CPU: Set how many sockets (CPU) en cores (threads).
+- Memory:
+  - Set RAM amount
+  - Disable Ballooning Device will limit/lock the RAM to the amount declared above. This means a VM will never able to go above this which is a plus, but you will also not be able to reclaim the RAM since it's fully provisioned for that VM, which is a negative.
+
+- Internal settings:
+  - The Qemu Agent will automatically be set up for the VM, but to get even better integration between Proxmox and the VM, it's maybe recommended to install ~acpid~. Do not to enable and start this service.
+  - To give the linux VM a static ip, you will need to edit the network interface settings. This can be often be done in ~/etc/network/interfaces~. Edit the interface like so:
+    #+begin_src
+auto <interface>
+iface <interface> int static
+ address <static ip>
+ netmask 255.255.255.0
+ gateway x.x.x.1
+
+iface <interface> inet6 auto
+    #+end_src
+
+*** LXC
+- Open the storage location that allows for saving CT templates.
+- Click templates and download the one you prefer.
+- Create CT
+  - General:
+    - Give the CT a name.
+    - Select whether the CT has priviliges or not.
+      - For example containers that need to interact with proxmox itself, network shares or others.
+      - You will probably find out real quick if this needs to be priviliged or not if things you are trying to do work or not.
+    - Select wheter the CT has nesting enabled or not.
+      - This is mainly use if you want to run containers inside containers.
+      - Just keep in on by default.
+  - Template: Select CT template.
+  - Disks: Set storage location and size.
+  - CPU: Allocate how many cores can be used.
+  - Memory: Set RAM and SWAP amount
+  - Network:
+    - Either keep it DHCP and it will randomly receive an ip.
+    - Or set it to static and enter a valid ip and gateway.
+  - Unlike VMs you can't set up other network storage locations using ~/etc/fstab~. For this, inside the node shell, run the command ~pct set <ct id> -mp<0,1,2,...> /mnt/pve/<smb storage>,mp=</container/mount/point>
+  - When planning on running containers inside this container or accessing other network storage locations, open the options menu when the CT is created.
+    - Open the 'Features' option and enable nesting and either NFS or SMB/CIFS depending on the storage protocol.
+
+** Personal Setup
+*** Network
+- 192.168.0.1 = gateway
+- 192.168.0.2 = Proxmox
+- 192.168.0.3 = TrueNAS
+- 192.168.0.4 = network: portainer, pihole, wireguard, cups
+- 192.168.0.5 = proxy: nginx proxy manager, uptime kuma, homarr (authalia, traefik)
+- 192.168.0.6 = website: nginx
+- 192.168.0.7-9 = reserved priority vm/container
+- 192.168.0.10 = cloud: nextcloud (with mariadb and redis), onlyoffice, actual, ghostfolio (with postgresql and redis) (collabora, syncthing)
+- 192.168.0.11 = media: deluge, prowlarr, radarr, sonarr, bazarr, plex, overseerr
+- 192.168.0.12 = misc: rtmp, zoffline
+- 192.168.0.13-39 = reserved vm/container
+- 192.168.0.40 = windows vm
+- 192.168.0.41 = macos vm
+- 192.168.0.42-49 = main machine vms
+- 192.168.0.50-99 = static network devices
+- 192.168.0.100-254 = dhcp
+- 192.168.0.255 = broadcast
+
+*** Proxmox IDs
+- 100-199 = VM services
+- 200-299 = containters
+- 300-399 = VM graphical environment
+- 400-... = misc
+
+*** Storage
+- Proxmox:
+  - 250GB NVMe SSD.
+    - local: ~70GB for ISO Images and CT Templates.
+    - local-lvm: ~150GB for VMs and CT Volumes.
+  - 2x 1.6TB SATA SSD in a mirror.
+    - local-zfs: ~1.55TB for VMs and CT Volumes.
+- TrueNAS:
+  - 3x 8TB HDD in RaidZ1 = ~15.8TB
+    - vault: pool with these datasets (shared with SMB)
+      - storage: personal files.
+      - media: Movies, TV shows and DSLR images.
+      - proxmox: Backup location for proxmox VMs and containers. But also for ISOs and CT templates.
+      - family: Share for family to store data (mostly photos)
+        - photo: Share to pull images inside Plex.
+
+*** Backups
+Proxmox:
+- VMs and CTs are every month backed up automatically to the proxmox dataset of TrueNAS.
+  - These are snapshots so I always protect one backup that has been back up when the VM was off.
+  - After 3 existing backups the oldest will automatically get deleted.
+- For specific files or directories is use a cronjob.
+  - Run ~crontab -e~.
+  - ~* * * * * rsync -r </file/or/dir/being/backed/up> </mounted/location/of/truenas/smb>~ where the start are changed to the correct interval (min, hour, dom, mon, dow)
+
+*** VM
+**** TrueNAS
+Proxmox:
+- ID = 100
+- Boot order = 1, Up = 60
+- QEMU Guest Agent = enabled
+- CPU = 8 cores
+- RAM = 16GB (no ballooning)
+- Storage = 32GB stored on local-lvm
+- SMB proxmox added as SMB/CIFS storage location named 'truenas' for storing VM and CT backups, ISOs and templates.
+Truenas:
+- Network
+  - IP = 192.168.0.3
+  - Default gateway = 192.168.0.1
+  - Nameserver = 1.1.1.1 1.0.0.1
+- Credentials - Local users
+  - create user = root, user1, user2
+  - set personal email on user root and user1
+  - Add groups "bultin_users" and "users" to Auxiliary Groups for user1 and 2
+  - Permit sudo for both users
+- Storage
+  - Pool = vault
+  - Dataset = storage (general storage), proxmox (virtualization), media (photos & videos), family (shared family storage), family/photo (photo folder family)
+  - Edit permissions:
+  |   | storage   | proxmox   | media     | family    | family/photo |
+  |---+-----------+-----------+-----------+-----------+--------------|
+  | u | user1 rwx | user1 rwx | user1 rwx | user2 rwx | user2 rwx    |
+  | g | users rwx | user1 rwx | users rwx | users rwx | user2 rwx    |
+  | o | other rx  | other rx  | other rx  | other rx  | other rx     |
+- Shares
+  - Active smb share for each dataset
+- Alerts
+  - Bell top right - Cog - Email
+  - Setup GMail OAuth
+- Data Protection
+  - Scrub vault every week on Wednesday at 12AM
+  - Snapshot every dataset weekly on sunday at 12AM and keep atleast 4 weeks
+  - SMART Test, long test on all (data) drives every first day of the month at 12 AM
+- Services
+  - SSH enabled on boot
+
+**** Media
+Proxmox:
+- use debian iso
+- ID = 101
+- boot order = 2
+- CPU = 4 cores
+- RAM = 4GB (no ballooning)
+- Storage = 64GB stored on local-zfs. If storing on a CIFS, change io_uring to native. This is less buggy.
+  - Discard on
+- Enable QEMU Guest Agent
+- Under options disable "Use tablet for pointer"
+VM:
+- ~apt install sudo && vim /etc/sudoers~: add user to sudoers
+- ~apt install qemu-guest-agent && systemctl start qemu-guest-agent && reboot~
+  - Some ram/timeout fixes:
+    - ~sysctl -w vm.dirty_ratio=10 && sysctl -w vm.dirty_background_ratio=5 && sysctl -p~
+- ~apt install acpid && systemctl enable/start acpid.service~: makes it easier to gracefully shut down vm. I guess it's not really an issue to use both acpid and qemu-guest-agent
+- Install docker engine
+- Set static ip
+  - ~sudo vim /etc/network/interfaces~:
+    - swap ~allow-hotplug <nic> \ iface <nic> inet dhcp~ to ~auto <nic> \ iface <nic> inet static \ address <static> \ netmask 255.255.255.0 \ gateway 192.168.0.1~
+  - ~sudo systemctl restart networking.service~
+- Connect media smb:
+  - ~sudo apt install cifs-utils~
+  - ~sudo vim /etc/fstab~
+  - ~sudo mkdir -p /mnt/media /mnt/photo/family~: used to mount share
+  - Add
+    - ~//192.168.0.3/media /mnt/media cifs username=<smblogin>,password=<smblogin>,uid=1000,gid=1000,_netdev,nofail 0 0~
+    - ~//192.168.0.3/media /mnt/photo/family cifs username=<smblogin>,password=<smblogin>,uid=1000,gid=1000,_netdev,nofail 0 0~
+- Setup the portainer agent: ~docker run -d -p 9001:9001 --name portainer_agent --restart=always -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/docker/volumes:/var/lib/docker/volumes portainer/agent:latest~
+  - So it can be accessed by portainer running on the network container. (more info on connection in boilerplates)
+- File setup for services
+  - ~sudo mkdir /home/<user>/Downloads~
+  - ~sudo mkdir /home/<user>/Docker /home/<user>/Docker/{deluge,prowlarr,radarr,sonarr,bazarr,overseerr,plex}~
+- Setup torrent, prowlarr, radarr, sonarr, bazarr, overseerr in portainer (using the boilerplates)
+
+**** Windows
+- Windows 11 iso from official website
+- Virtio drivers: https://pve.proxmox.com/wiki/Windows_VirtIO_Drivers (I believe they are hosted by Fedora)
+- ID = 300
+- CPU = 16 cores
+- CPU type = host (when moved to other host, might need to change)
+- RAM = 8GB (ballooning off)
+- Guest OS = Type MS Windows 11/2022
+- System = q35
+- BIOS = OVMF
+- Add TPM
+- Network model = VirtIO
+- Enable Qemu Agent
+- Disk Device = VirtIO Block - discard on
+- After creation:
+  - Add hardware: CD/DVD Drive with virtio iso
+
+***** Notes
+- On first boot, quickly press enter to correctly boot.
+- During installation load the correct drivers from virtio iso:
+  - amd64/win11
+  - netkvm/win11 - not recommended if you want to skip microsoft registration.
+    - During registration ~Shift+F10~ and run ~OOBE/BYPASSNRO~ to skip registration.
+- In windows, in file explorer, open virtio iso
+  - Install all drivers using the virtio-win-gt-x64 installer and reboot
+  - It's also recommended to install the virtio-win-guest-tools (this will fix the mouse stutter when using spice)
+- After installation, press esc during boot to change resolution to prefered resolution
+  - This can be buggy and you might need to reboot multiple times
+- It's best to disable auto sleep otherwise the vm will pause in Proxmox.
+- If the vm gets stuck or can't reboot or shut down, in the pve shell run:
+  - ~ps aux | grep <vm id>~
+  - ~kill -9 <id given>~
+
+***** GPU passthrough
+****** General
+- For the best success rate, check out https://pve.proxmox.com/wiki/Pci_passthrough
+- After installation not the ip or make it static and enable remote desktop.
+- Edit GRUB_CMDLINE_LINUX_DEFAULT in ~/etc/default/grub~
+  - add ~intel_iommu=on~ or ~amd_iommu=on~ depending on your cpu. This will separate every component on pc into groups that can be passed through.
+  - verify by running: ~dmesg | grep -e DMAR -e IOMMU~
+  - *currently kernel issues, also add: ~initcall_blacklist=sysfb_init~
+- Edit ~/etc/modules~ and add 'vfio vfio_iommu_type1 vfio_pci vfio_virqfd' (each on seperate lines)
+- Edit ~/etc/modprobe.d/pve-blacklist.conf~ and add: 'blacklist nvidiafb blacklist nvidia blacklist radeon blacklist nouveau' (each on seperate lines)
+  - or ~echo "blacklist radeon/nouveau/nvidia" >> /etc/modprobe.d/blacklist.conf~. note this needs to be run 3x for each driver seperately
+- If things still don't work:
+  - ~echo "options vfio_iommu_type1 allow_unsafe_interrupts=1" > /etc/modprobe.d/iommu_unsafe_interrupts.conf~
+  - ~lspci -n -s 0x:00~, this is to find the vendor id of the videocard. 0x:00 can be found by ~lspci~
+  - ~echo "options vfio-pci ids=<vendor id gpu>,<vendor id gpu audio" > /etc/modprobe.d/vfio.conf~, note that the vendor id is a 2 part code with a ":" seperator.
+  - Edit ~/etc/pve/qemu-server/<vm id>.conf~ and add:
+    - ~cpu: host,hidden=1,flags=+pcid~ (this one might already exist, you can delete the existing one)
+    - ~args: -cpu 'host,+kvm_pv_unhalt,+kvm_pv_eoi,hv_vendor_id=NV43FIX,kvm=off'~
+  - For nvidia: ~echo "options kvm ignore_msrs=1 report_ignored_msrs=0" > /etc/modprobe.d/kvm.conf~
+  - *Some kernels have issues with passing through stuff correctly, if this is the case try to run (where x is the lspci id):*
+    - ~echo 1 > /sys/bus/pci/devices/0000\:0x\:00.0/remove~
+    - ~echo 1 > /sys/bus/pci/rescan~
+- Best to reboot.
+- Add hardware: PCI device. Select videocard.
+- Display can be changed to 'None' (novnc will now no longer be possible)
+- Start vm and connect with rdp client (for example Remmina)
+- Install video drivers.
+
+****** Personal
+For my RX580 8GB best result with:
+- Edit ~/etc/default/grub~ and change GRUB_CMDLINE_LINUX_DEFAULT to ~amd_iommu=on initcall_blacklist=sysfb_init~
+- Edit ~/etc/modules~ and add 'vfio vfio_iommu_type1 vfio_pci vfio_virqfd' (each on seperate lines)
+- Edit ~/etc/modprobe.d/blacklist.conf~ and add: 'blacklist nvidiafb blacklist nvidia blacklist radeon blacklist nouveau' (each on seperate lines)
+- ~echo "options vfio_iommu_type1 allow_unsafe_interrupts=1" > /etc/modprobe.d/iommu_unsafe_interrupts.conf~
+- Edit ~/etc/pve/qemu-server/<vm id>.conf~ and add:
+  - ~cpu: host,hidden=1,flags=+pcid~
+- Use Remmina and Parsec to connect.
+  - If Parsec complains, check that monitors are duplicated, within Parsec OpenGL is enabled, 30Mbps and 30fps, new beta controller disabled and in proxmox display is set to none.
+    Also if unable to use keyboard and mouse after connecting, force the ctrl+alt+del via de overlay menu.
+
+***** Gaming
+- Either use something like moonlight/sunshine or parsec. Personally I had more success with parsec.
+- If distro does not have parsec packaged, use the flatpak.
+- Set up parsec on windows:
+  - Current best host settings for me:
+    - Window mode: fullscreen
+    - Renderer: OpenGL
+    - VSync: Off
+    - Decoder: Software
+    - H265: Off (i believe not supported for both my devices. Otherwise it might be better to turn on)
+    - Hosting: Enables
+    - Resolution: Keep Host Resolution
+    - Bandwith Limit: 30 Mbps
+    - Frames: 30
+  - Current client settings:
+    - Codec: H264
+    - Decoder: Software
+    - Resolution: Keep Host Resolution
+    - Bandwith limit: 30 Mbps (current limit is 35 for my network for some reason. If I set it to 35 it will fully saturate the connection for video meaning input lag)
+    - Constant FPS: off
+
+**** MacOS
+- MacOS monterey iso from https://techrechard.com/
+- OpenCore iso from guide link below
+- ID = 300
+- CPU = 4 cores
+- CPU type = Penryn
+- RAM = 8GB (ballooning on)
+- Guest OS = Other
+- System = q35
+- Graphic card = VMware compatible
+- Hard Drive iso = OpenCore
+- BIOS = OVMF
+- Pre-Enrolled Keys unchecked
+- Network model = VirtIO
+- Disk Device = VirtIO Block - discard on
+- Cache = Write back (unsafe)
+- Network Model: VirtIO or VMware vmxnet3
+- After creation:
+  - Add hardware: CD/DVD Drive with MacOS monterey iso
+***** Notes
+- Follow this guide: https://i12bretro.github.io/tutorials/0628.html
+- Remote access is via VNC (maybe a bit snappier than noVNC)
+  - Apple - System Preferences - Sharing - Remote Management - Allow all
+- Automatically boot into MacOS.
+  - Install xcode (~$ xcode-select --install~) and the editor from the App Store.
+  - ~$ sudo mkdir /Volumes/EFI~
+  - ~$ sudo mount -t msdos /dev/<diskparition - find with diskutil list> /Volumes/EFI~
+  - Edit /Volumes/EFI/EFI/OC/config.plist with xcode.
+  - Under Misc - Boot - Timout, change it to x seconds
+
+***** Running with spice
+- Makes sound possible
+- Add/Change hardware:
+  - Audio Device: ich9-intel-hda
+  - Display: SPICE (qxl,memory=128)
+- Mouse stutter? - install virtio-win-guest-tools in the virtio iso.
+- When launching with console, it will download a virt-viewer file.
+  - If disto allows it, just double-click and it will open de vm.
+  - Otherwise ~remote-viewer <path/to/file>~
+
+*** CT
+**** Network
+Proxmox:
+- container template of debian 11
+- ID = 200
+- Boot order = 2
+- CPU = 1 core
+- RAM = 512MB (no ballooning)
+- SWAP = 512MB
+- Storage = 8GB stored on local-lvm
+- Firewall = Disabled
+- IP = 192.168.0.4
+Container:
+- Install docker engine: https://docs.docker.com/engine/install/debian/
+- Get portainer: ~docker run -d -p 8000:8000 -p 9443:9443 --name portainer --restart=always -v /var/run/docker.sock:/var/run/docker.sock -v portainer_data:/data portainer/portainer-ce:latest~
+  - Inside portainer create a stack for wireguard and pihole (also don't for get to create the needed dirs to store data). Setups can be found in boilerplates.
+Printing:
+- ~apt install cups~
+- edit ~/etc/cups/cupsd.conf~
+  - change "Listen localhost:631" to "Listen <ip>:631" or "Port 631"
+  - Browsing On
+  - Restrict acces to the server & admin pages ... - add "Allow @LOCAL" inbetween <Location>
+  - Admin login = host login
+  - On the web panel add the printer (should be found automatically using avahi)
+    - Pick the ipp drivers for the printer and make it shared over network.
+      - Any linux computer on the network (with cups install will automatically add find this printer)
+      - Pick the "*_network" one while printing since this uses ipp
+
+**** Proxy
+Proxmox:
+- container template of debian 11
+- ID = 201
+- Boot order = 2
+- CPU = 1 core
+- RAM = 512MB (no ballooning)
+- SWAP = 512MB
+- Storage = 8GB stored on local-zfs
+- Firewall = Disabled
+- IP = 192.168.0.5
+Container:
+- Install docker engine: https://docs.docker.com/engine/install/debian/
+- Get portainer agent: ~docker run -d -p 9001:9001 --name portainer_agent --restart=always -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/docker/volumes:/var/lib/docker/volumes portainer/agent:latest~
+
+**** Cloud
+Proxmox:
+- container template of debian 11
+- ID = 202
+- Boot order = 2
+- CPU = 1 core
+- RAM = 2GB (no ballooning)
+- SWAP = 2GB
+- Storage = 16GB stored on local-zfs
+- Firewall = Enabled
+- IP = 192.168.0.10
+- Unprivileged container = No (need to mount cifs)
+- Features
+  - nesting = enables (makes everything faster in privileged container)
+  - mount = cifs
+Container:
+- Install docker engine: https://docs.docker.com/engine/install/debian/
+- Get portainer agent: ~docker run -d -p 9001:9001 --name portainer_agent --restart=always -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/docker/volumes:/var/lib/docker/volumes portainer/agent:latest~
+  - Inside portainer create a stack for nextcloud (+mariadb) and onlyoffice (also don't for get to create the needed dirs to store data). Setups can be found in boilerplates.
+- From personal experience it's better to use the official docker setup (from boilerplates) because it's easier to set it up with mariadb (which is a bit more performant then SQlite)
+  - The only issue is that external SMB is not enabled but this can still be done using fstab and adding a local directory pass through to docker.
+- Edit ~/etc/fstab~ and add ~//192.168.0.3/storage /mnt/storage cifs username=<smblogin>,password=<smblogin>,uid=33,gid=33,_netdev,nofail 0 0~ (uid/gid 33 is used because this is the www-data docker group)
+
+- Nextcloud:
+  - It's recommended to set up https with npm beforehand. This makes the setup a bit easier and automated.
+    - If this is not done and you can't log in after registration, use chromium or firefox private window.
+    - If planning to use an editor and using traefik, add a middleware for onlyoffice: ~middlewares: onlyoffice-headers: headers: customrequestheaders: X-Forwarded-Proto: "https"~ (will fix white infinite loading screen)
+  - Editors:
+    - Onlyoffice
+      - Setup a stack from the boilerplates
+      - Nextcloud apps: install onlyoffice
+      - Nextcloud settings: add url of onlyoffice documentserver
+    - Collabora
+      - Setup a stack form the boilerplates
+      - Nextcloud apps: install nextcloud office (or sometimes named collabora office)
+      - Nextcloud settings: add url of collabora
+        - There might be change this gives an error with mismatching http and https but should be fine. In worse case reload page.
+    - There can be some issues with using these. See the paragraph about editing the files below.
+      - This encountering issues with not being able to access the files, redis might be a solution. Also check that the smb is mounted as the correct id.
+      - With doubt, just remove everthing and build fresh (don't even try recreate...)
+  - Apps:
+    - Enable external storage support
+    - Install nextcloud office
+  - Settings:
+    - Administration:
+      - External storage: Add local storage linked to ~/data~ (since this is how it's used in the boilerplate)
+  - Edit docker files: ~/html/config/config.php~ between ~$CONFIG = array ( ... );~:
+    - Add trusted domains if everything was set-up before setting up tls and a domain url
+      - ~'trusted_domains' => array ( 0 => 'subdomain nextcloud.domain', 1 => 'subdomain openoffice/collabora.domain' ),~
+    - Allow connections from mobile phone app:
+      - ~'overwriteprotocol' => 'https',~
+
+**** Website
+Proxmox:
+- container template of debian 11
+- ID = 203
+- Boot order = 2
+- CPU = 1 core
+- RAM = 1GB (no ballooning)
+- SWAP = 1GB
+- Storage = 8GB stored on local-zfs
+- Firewall = Enabled
+- IP = 192.168.0.6
+- Unprivileged container = Yes
+- Features
+  - nesting = enables (makes everything faster in privileged container)
+Container:
+- Install nginx with apt
+- Move all website files to ~/var/www/html/~
+
+**** Misc
+Proxmox:
+- container template of debian 11
+- ID = 204
+- Boot order = 2
+- CPU = 1 core
+- RAM = 2GB (no ballooning)
+- SWAP = 2GB
+- Storage = 16GB stored on local-zfs
+- Firewall = Enabled
+- IP = 192.168.0.6
+- Unprivileged container = Yes
+- Features
+  - nesting = enables (makes everything faster in privileged container)

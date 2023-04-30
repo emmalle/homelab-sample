@@ -1,0 +1,28 @@
+# All Proxmox Hosts
+[virtual:children]
+vm
+lxc
+
+# All Proxmox Linux VMs
+[vm]
+media
+
+# All Proxmox Debian LXCs
+[lxc]
+network
+proxy
+website
+cloud
+misc
+
+# Temporary Device
+[temp]
+#...
+
+# VM Variables
+[vm:vars]
+ansible_ssh_user=root
+
+# LXC Variables
+[lxc:vars]
+ansible_ssh_user=root

@@ -1,0 +1,19 @@
+version: '3'
+
+services:
+  zoffline:
+    image: zoffline/zoffline
+    container_name: zoffline
+
+    restart: unless-stopped
+
+    ports:
+      - 80:80
+      - 443:443
+      - 3022:3022/udp
+      - 3023:3023
+
+    volumes:
+      - <path/to/host/storage>:/usr/src/app/zwift-offline/storage
+    environment:
+      - TZ=Europe/Brussels

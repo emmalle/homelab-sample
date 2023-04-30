@@ -1,0 +1,75 @@
+#+title: OnlyOffice
+#+property: header-args :tangle docker-compose.yml
+
+ONLYOFFICE Document Server is an online office suite comprising viewers and editors for texts, spreadsheets and presentations, fully compatible with Office Open XML formats: .docx, .xlsx, .pptx and enabling collaborative editing in real time. - https://www.onlyoffice.com/
+
+** Docker-compose.yml
+*** Docker Image
+
+- Docker Service Name = onlyoffice
+- Image: Specify the docker image. No version behind the colon so it will use the latest version.
+- Container_name: Name that will be given to the container. If not stated, this will be randomized.
+
+#+begin_src yaml
+version: '2'
+
+services:
+  onlyoffice:
+    image: onlyoffice/documentserver:latest
+    container_name: onlyoffice
+#+end_src
+
+*** General
+
+- Restart: The container will always try to restart unless it is manually stopped by the user.
+
+#+begin_src yaml
+    restart: unless-stopped
+    stdin_open: true
+#+end_src
+
+*** Network
+
+- Ports: Website with more information, updates and commands
+
+#+begin_src yaml
+    ports:
+      - 80:80
+#+end_src
+
+*** Variables:
+
+- Environment:
+  - Variables for JWT to secure your documentserver
+
+#+begin_src yaml
+    environment:
+      - JWT_ENABLED=true
+      - JWT_SECRET=<password>
+#+end_src
+
+** Usage
+
+- When OnlyOffice is installed, add your own documentserver in the Office menu.
+  - https://<wildcard.domain.example onlyoffice>
+- Reverse proxy
+  - When using traefik, dont forget to add a middleware header: customrequestheaders: X-Forwarded-Proto: "https"
+  - When using npm, best to just enable all ssl settings.
+  - Maybe also allow websocket support
+- If you don't want OnlyOffice, you can also install Collabora:
+  - Install Collabora Office/Nextcloud office and the included boilerplate
+- When using with Nextcloud, there are a few things that need to be added to the ~/html/config/config.php~ Add:
+#+begin_src
+  'trusted_domains' =>
+  array (
+    0 => '<nextcloud.yourdomain.com>',
+    1 => '<onlyoffice.yourdomain.com>',
+  ),
+  'trusted_proxies' =>
+  array (
+    0 => '<nextcloud.yourdomain.com>',
+    1 => '<onlyoffice.yourdomain.com>',
+  ),
+  'overwrite.cli.url' => '<https://nextcloud.yourdomain.com>',
+  'overwriteprotocol' => 'https',
+#+end_src
